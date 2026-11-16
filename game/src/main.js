@@ -1,7 +1,7 @@
 // EMBERLINE boot and the one loop: a fixed 60 Hz simulation feeding a render at the
 // display's rate. main.js wires the modules together and owns the glue the others do
 // not: the player's shots, grenade throws, bomb planting, damage and the match flow.
-// ?shot=start|play|end with &seed=N sets up a deterministic frame for a capture,
+// ?shot=start|play|action|end with &seed=N sets up a deterministic frame for a capture,
 // renders it twice, then freezes it and sets window.__shotReady.
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
@@ -31,11 +31,15 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Filmic tone mapping keeps the dusk sun from blowing out the bright faces
+// while lifting the shadowed ones, so the scene reads at a glance.
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 document.getElementById('game').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(PALETTE.sky);
-scene.fog = new THREE.Fog(new THREE.Color(PALETTE.sky), 26, 78);
+scene.fog = new THREE.Fog(new THREE.Color('#2b3040'), 30, 95);
 const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 200);
 scene.add(camera);
 
@@ -84,6 +88,7 @@ let started = false;
 let beepAt = 0;
 let accumulator = 0;
 let lastTime = performance.now();
+let playerMeshReg = true;
 
 function ownedForHud() {
   const owned = {};
@@ -108,9 +113,22 @@ function damageActor(target, amount, attacker, part) {
   if (target.isPlayer) {
     died = player.hurt(amount);
     hud.damageFlash();
+    // Show where the shot came from: the bearing of the attacker relative to
+    // the player's facing, so the player can turn toward the threat.
+    if (attacker) {
+      const dx = attacker.position.x - playerActor.position.x;
+      const dz = attacker.position.z - playerActor.position.z;
+      const bearing = Math.atan2(-dx, -dz) - playerActor.yaw;
+      hud.damageFrom(bearing);
+    }
     audio.hurt();
     if (died) {
       playerActor.alive = false;
+      // A dead player's hitboxes must not stop bullets either.
+      if (playerMeshReg) {
+        combat.unregisterHitMeshes([torsoHit, headHit]);
+        playerMeshReg = false;
+      }
       pushFeed(state, `You were eliminated by ${attacker.name}`, attacker.side);
     }
   } else {
@@ -232,6 +250,10 @@ function updateAmmoHud() {
 function resetRoundActors() {
   player.reset(SPAWNS.ember[0]);
   playerActor.alive = true;
+  if (!playerMeshReg) {
+    combat.registerHitMeshes([torsoHit, headHit]);
+    playerMeshReg = true;
+  }
   weapons.refill();
   bots.resetRound();
   combat.clear();
@@ -409,6 +431,16 @@ function updatePlant(dt) {
   }
 }
 
+function updateBotObjective() {
+  // When a bot plants or defuses, the plant bar shows it — the objective
+  // state is visible even when the planter is out of sight. The player's own
+  // planting is owned by updatePlant, so this never touches that bar.
+  const bomb = state.bomb;
+  if (state.phase !== 'live' || bomb.carrierId === 'player') return;
+  if (bomb.plantProgress > 0) hud.setPlant(bomb.plantProgress, 'ENEMY PLANTING BOMB');
+  else if (bomb.defuseProgress > 0) hud.setPlant(bomb.defuseProgress, 'ENEMY DEFUSING BOMB');
+}
+
 function updateBombPickup() {
   const bomb = state.bomb;
   if (bomb.status !== 'dropped' || !bomb.pos || !playerActor.alive) return;
@@ -490,6 +522,7 @@ function step(dt) {
   if (state.phase === 'live') {
     bots.step(dt, botCtx);
     updatePlant(dt);
+    updateBotObjective();
     updateBombPickup();
     updateBombBeep(dt);
   }
@@ -579,15 +612,58 @@ function runShot(name) {
     if (enemy) {
       aimAt(enemy.position.x, 1.3, enemy.position.z);
       shootOnce();
-      settle(6);
+      // Two steps only: the tracer lives 0.07s, so a longer settle would let
+      // it fade before the capture.
+      settle(2);
+    }
+  } else if (name === 'action') {
+    // Mid-round action frame: a smoke cloud thrown up mid-lane, then a shot
+    // at an enemy through it, so the frame shows the grenade, the tracer and
+    // an opponent in one read.
+    startMatch();
+    match.startRound();
+    weapons.buyGrenade('smoke');
+    playerActor.position.set(0, 0, 10);
+    playerActor.yaw = 0.15;
+    playerActor.pitch = 0;
+    settle(50);
+    weapons.selectSlot(4);
+    throwGrenade();
+    // The smoke fuse is 1.0s: wait 2s so the cloud is up before the frame.
+    settle(120);
+    const enemy = bots.bots.find((b) => b.side === 'ash' && b.alive);
+    if (enemy) {
+      aimAt(enemy.position.x, 1.3, enemy.position.z);
+      shootOnce();
+      // Two steps only: the tracer lives 0.07s, so a longer settle would let
+      // it fade before the capture.
+      settle(2);
     }
   } else {
     startMatch();
     state.roundsWon.ember = 1;
     state.roundsWon.ash = 0;
-    hud.showRoundEnd('ember', 'Ash eliminated', 1, 0);
-    playerActor.position.set(0, 0, 8);
-    aimAt(-22, 1.5, -14);
+    // Stage the planted bomb at Site A, lit and blinking, so the round-end
+    // frame shows the objective as well as the result. The round-end overlay
+    // stays hidden on purpose: a panel over the scene hides the bomb, the
+    // site and the score, and the feed line plus the 1 — 0 top bar already
+    // say the round was won.
+    state.bomb.status = 'planted';
+    state.bomb.site = 'A';
+    state.bomb.fuse = 32;
+    state.bomb.pos = { x: -22, z: -14 };
+    world.bombGroup.visible = true;
+    world.bombGroup.position.set(-22, 0.15, -14);
+    world.bombLight.visible = true;
+    world.bombPoint.intensity = 6;
+    hud.hideBuy();
+    hud.hideOverlay();
+    pushFeed(state, 'Ember wins the round — Ash eliminated', 'ember');
+    // Shoot through the A gap (x in [-20, -17] at z = -8): from here the line
+    // to the bomb passes the gap, not the divider wall.
+    playerActor.position.set(-18, 0, -3);
+    aimAt(-22.5, 1.0, -14.5);
+    settle(10);
   }
   syncCamera();
   updateHud();

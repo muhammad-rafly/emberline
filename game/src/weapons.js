@@ -23,7 +23,7 @@ export const WEAPONS = {
   },
   sniper: {
     id: 'sniper', slot: 1, name: 'Longbow-50', kind: 'sniper', price: 4750,
-    damage: 125, headMult: 4, auto: false, gap: 1.15, mag: 5, reserve: 15,
+    damage: 140, headMult: 4, auto: false, gap: 1.15, mag: 5, reserve: 15,
     reload: 3.0, spreadStill: 0.0004, spreadMove: 0.05, recoil: 0.03, range: 120,
   },
 };
@@ -68,10 +68,10 @@ export function createWeaponSet(camera) {
     camera.add(models[kind]);
   }
   const flash = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.24, 0.24),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide }),
+    new THREE.PlaneGeometry(0.11, 0.11),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.accent), transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide }),
   );
-  flash.position.set(0.24, -0.18, -0.95);
+  flash.position.set(0.24, -0.18, -1.05);
   flash.visible = false;
   camera.add(flash);
   const flashLight = new THREE.PointLight(new THREE.Color(PALETTE.accent), 0, 5);
@@ -108,7 +108,7 @@ export function createWeaponSet(camera) {
     model.position.z = -0.42 + state.kick;
     model.rotation.x = state.kick * 2.2;
     flash.visible = state.flash > 0;
-    flash.rotation.z = state.flash * 30;
+    flash.rotation.z = state.flash * 8;
     flashLight.intensity = state.flash > 0 ? 18 : 0;
     if (state.reloadLeft > 0) {
       state.reloadLeft = Math.max(0, state.reloadLeft - dt);

@@ -38,12 +38,19 @@ export function createHud() {
   const bombStatus = $('bomb-status');
   const hitmarker = $('hitmarker');
   const damage = $('damage');
+  const dmgEdges = {
+    front: $('dmg-front'),
+    right: $('dmg-right'),
+    back: $('dmg-back'),
+    left: $('dmg-left'),
+  };
   const crosshair = $('crosshair');
   const plantBar = $('plant-bar');
   const plantFill = $('plant-fill');
   const plantLabel = $('plant-label');
   let hitTimer = 0;
   let damageTimer = 0;
+  let dmgDirTimer = 0;
   let last = {};
   let buyHandler = null;
   let deployHandler = null;
@@ -145,25 +152,46 @@ export function createHud() {
       clearTimeout(damageTimer);
       damageTimer = setTimeout(() => damage.classList.remove('on'), 220);
     },
+    // Light one edge of the screen for the side the damage came from: bearing
+    // is the attacker's angle relative to the player's facing, 0 straight
+    // ahead, positive to the left (the yaw convention turns left positive).
+    damageFrom(bearing) {
+      let rel = bearing;
+      while (rel > Math.PI) rel -= Math.PI * 2;
+      while (rel < -Math.PI) rel += Math.PI * 2;
+      const abs = Math.abs(rel);
+      const side = abs < Math.PI / 4 ? 'front' : abs > (3 * Math.PI) / 4 ? 'back' : rel > 0 ? 'left' : 'right';
+      for (const key of Object.keys(dmgEdges)) dmgEdges[key].classList.toggle('on', key === side);
+      clearTimeout(dmgDirTimer);
+      dmgDirTimer = setTimeout(() => {
+        for (const key of Object.keys(dmgEdges)) dmgEdges[key].classList.remove('on');
+      }, 400);
+    },
     showStart() {
+      overlay.classList.remove('light-dim');
       title.textContent = 'EMBERLINE';
       copy.textContent = 'A dusk solar yard. Plant the bomb at Site A or Site B — or eliminate the Ash defenders. First to 5 rounds takes the match.';
       play.textContent = 'Click to play';
       overlay.hidden = false;
     },
     showPaused() {
+      overlay.classList.remove('light-dim');
       title.textContent = 'EMBERLINE';
       copy.textContent = 'Paused. Click to resume.';
       play.textContent = 'Click to resume';
       overlay.hidden = false;
     },
     showRoundEnd(winner, reason, ember, ash) {
+      // A lighter dim than the start screen, so the map stays visible behind
+      // the result panel.
+      overlay.classList.add('light-dim');
       title.textContent = winner === 'ember' ? 'Round won' : 'Round lost';
       copy.textContent = `${reason}. Ember ${ember} — ${ash} Ash. Next round starts soon.`;
       play.textContent = 'Continue';
       overlay.hidden = false;
     },
     showMatchEnd(winner, ember, ash) {
+      overlay.classList.remove('light-dim');
       title.textContent = winner === 'ember' ? 'Match won' : 'Match lost';
       copy.textContent = `Final score: Ember ${ember} — ${ash} Ash. Click to play again.`;
       play.textContent = 'Play again';

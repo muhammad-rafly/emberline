@@ -49,6 +49,8 @@ export function createState(seed) {
     winner: null,
     winReason: '',
     noise: [],
+    // Last site alert raised by a defender that spotted an attacker: { site, time }.
+    alert: null,
     time: 0,
     shotCount: 0,
   };

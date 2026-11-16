@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 import { WEAPONS } from './weapons.js';
 import { SITES, SPAWNS } from './world.js';
-import { addNoise, actorById, aliveActors } from './state.js';
+import { addNoise, actorById, aliveActors, pushFeed } from './state.js';
 
 const BOT_SPEED = 4.3;
 const EYE_HEIGHT = 1.5;
@@ -21,9 +21,10 @@ const ENEMY_NAMES = ['Rook', 'Hale', 'Sable', 'Fang'];
 
 function buildBody(scene, side, name) {
   const teamColor = side === 'ember' ? PALETTE.ally : PALETTE.enemy;
-  const torsoMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(teamColor), roughness: 0.65, metalness: 0.05 });
+  const torsoMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(teamColor), roughness: 0.65, metalness: 0.05, emissive: new THREE.Color(teamColor), emissiveIntensity: 0.22 });
   const darkMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.concreteDark), roughness: 0.85 });
   const headMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.ink), roughness: 0.5, metalness: 0.1 });
+  const glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(teamColor) });
   const group = new THREE.Group();
   const legs = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.62, 0.28), darkMat);
   legs.position.y = 0.31;
@@ -35,7 +36,16 @@ function buildBody(scene, side, name) {
   head.userData.part = 'head';
   const gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.55), darkMat);
   gun.position.set(0.2, 1.15, -0.3);
-  group.add(legs, torso, head, gun);
+  // A glowing visor slit and a chest stripe in the team colour, plus a small
+  // floating chevron above the head: at dusk, and down a long lane, a bot must
+  // read as friend or foe before its outline does.
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.04, 0.02), glowMat);
+  visor.position.set(0, 1.57, -0.15);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 0.02), glowMat);
+  stripe.position.set(0, 1.18, -0.16);
+  const chevron = new THREE.Mesh(new THREE.OctahedronGeometry(0.13), new THREE.MeshBasicMaterial({ color: new THREE.Color(teamColor), transparent: true, opacity: 0.9 }));
+  chevron.position.set(0, 1.98, 0);
+  group.add(legs, torso, head, gun, visor, stripe, chevron);
   group.traverse((mesh) => {
     if (mesh.isMesh) {
       mesh.castShadow = true;
@@ -75,8 +85,13 @@ export function createBots(scene, world, mover, combat, state) {
       reactionAt: 0,
       burstLeft: 0,
       burstPause: 0,
-      grenades: { he: 0 },
+      grenades: { he: 0, smoke: 0 },
       grenadeAt: 0,
+      smokeAt: 0,
+      lastCallout: -99,
+      alertFor: 0,
+      holdPoint: null,
+      meshReg: true,
       retrieving: false,
       perceiveAt: skill * 0.05,
       stuckAt: 0,
@@ -126,6 +141,7 @@ export function createBots(scene, world, mover, combat, state) {
     ];
     enemies.forEach((bot, i) => {
       bot.targetSite = null;
+      bot.holdPoint = holds[i % holds.length];
       routeTo(bot, holds[i % holds.length]);
       bot.mode = 'route';
     });
@@ -155,6 +171,15 @@ export function createBots(scene, world, mover, combat, state) {
     const eye = eyeOf(bot);
     const chestY = other.isPlayer ? other.position.y + other.eye - 0.25 : 1.25;
     return !world.segmentBlocked(eye.x, eye.y, eye.z, other.position.x, chestY, other.position.z, smokes);
+  }
+
+  // Where a spotted enemy is, in words the feed can show: a site letter, or
+  // the lane the target stands in.
+  function calloutWhere(x, z) {
+    const site = world.siteAt(x, z);
+    if (site) return `Site ${site}`;
+    if (Math.abs(x) < 10) return 'mid';
+    return x < 0 ? 'A side' : 'B side';
   }
 
   function perceive(bot, ctx, dt) {
@@ -188,6 +213,23 @@ export function createBots(scene, world, mover, combat, state) {
         bot.reactionAt = state.time + (0.5 + state.random() * 0.45) * bot.skill;
         bot.burstLeft = 0;
         bot.burstPause = 0;
+        // Callout: a bot that spots a new enemy says so in the feed, and a
+        // defender that spots the bomb carrier raises a site alert the rest of
+        // the defence rotates to. Throttled, so the feed never floods.
+        if (state.time - bot.lastCallout > 5) {
+          bot.lastCallout = state.time;
+          const where = calloutWhere(best.position.x, best.position.z);
+          if (state.bomb.carrierId === best.id) {
+            pushFeed(state, `${bot.name}: bomb carrier at ${where}`, bot.side);
+          } else {
+            pushFeed(state, `${bot.name}: contact ${where}`, bot.side);
+          }
+        }
+        if (bot.side === 'ash') {
+          const site = world.siteAt(best.position.x, best.position.z)
+            || (best.position.x < 0 ? 'A' : 'B');
+          state.alert = { site, time: state.time };
+        }
       }
       bot.lastSeen = { x: best.position.x, z: best.position.z };
       bot.lastSeenTime = state.time;
@@ -312,14 +354,55 @@ export function createBots(scene, world, mover, combat, state) {
     addNoise(state, bot.position.x, bot.position.z, 20, 'throw');
   }
 
+  // A hurt bot with a smoke grenade drops it at its own feet and falls back
+  // to its post, so a losing duel buys a covered retreat instead of a death.
+  function throwSmokeAt(bot, ctx) {
+    if (bot.grenades.smoke <= 0 || state.time < bot.smokeAt) return false;
+    if (bot.health >= 40 || !bot.target) return false;
+    const eye = eyeOf(bot);
+    const from = new THREE.Vector3(eye.x, eye.y, eye.z);
+    const dir = new THREE.Vector3(0, -1, 0);
+    ctx.combat.throwGrenade('smoke', from, dir, bot);
+    bot.grenades.smoke -= 1;
+    bot.smokeAt = state.time + 30;
+    addNoise(state, bot.position.x, bot.position.z, 20, 'throw');
+    return true;
+  }
+
+  function fallbackPoint(bot) {
+    if (bot.side === 'ash') {
+      const site = SITES[bot.targetSite || 'A'];
+      return { x: site.x, z: site.z + 3 };
+    }
+    return { x: 0, z: 20 };
+  }
+
   function stepBot(bot, ctx, dt) {
     if (!bot.alive) {
       bot.fall = Math.min(1, bot.fall + dt / 0.4);
       bot.group.rotation.x = -bot.fall * 1.45;
+      // A corpse must not stop bullets: unregister its hit meshes once, so a
+      // ray through where it fell keeps going instead of ending at the body.
+      if (bot.meshReg) {
+        combat.unregisterHitMeshes([bot.torso, bot.head]);
+        bot.meshReg = false;
+      }
       return;
     }
     perceive(bot, ctx, dt);
     hear(bot, ctx);
+
+    // Defender rotation: a fresh site alert pulls idle defenders off the quiet
+    // site toward the one the attackers are pushing. Each alert is answered
+    // once per bot (alertFor), and a bot already near the site stays put.
+    if (bot.side === 'ash' && !bot.target && (bot.mode === 'route' || bot.mode === 'hold')
+      && state.alert && state.time - state.alert.time < 8 && bot.alertFor !== state.alert.time) {
+      const site = SITES[state.alert.site];
+      bot.alertFor = state.alert.time;
+      if (Math.hypot(bot.position.x - site.x, bot.position.z - site.z) > 8) {
+        routeTo(bot, { x: site.x, z: site.z + 3 });
+      }
+    }
 
     const bomb = state.bomb;
     const isCarrier = bomb.carrierId === bot.id;
@@ -340,37 +423,75 @@ export function createBots(scene, world, mover, combat, state) {
     }
 
     if (bot.target && bot.target.alive) {
+      // Breaking off a plant or a defuse to fight abandons the progress: the
+      // bar must not keep showing a plant or defuse nobody is doing, and the
+      // next attempt starts from zero.
+      if (bot.mode === 'plant') bomb.plantProgress = 0;
+      if (bot.mode === 'defuse' && bomb.defuserId === bot.id) {
+        bomb.defuseProgress = 0;
+        bomb.defuserId = null;
+      }
       bot.mode = 'engage';
       const t = bot.target;
-      faceToward(bot, t.position.x, t.position.z, dt, 10);
-      const dist = Math.hypot(t.position.x - bot.position.x, t.position.z - bot.position.z);
-      if (bot.retrieving && bomb.status === 'dropped' && bomb.pos) {
-        // The objective outranks the duel: keep moving for the bomb while
-        // shooting, facing the target so the shots still track it.
-        moveToward(bot, bomb.pos.x, bomb.pos.z, dt);
-        faceToward(bot, t.position.x, t.position.z, dt, 10);
-      } else if (dist > 14) {
-        moveToward(bot, t.position.x, t.position.z, dt);
+      // A hurt bot with a smoke breaks contact first: drop the cloud at its
+      // own feet, drop the target, and fall back to its post.
+      if (throwSmokeAt(bot, ctx)) {
+        bot.target = null;
+        routeTo(bot, fallbackPoint(bot));
       } else {
-        // Strafe a little while firing so the bot is not a statue.
-        const strafe = Math.sin(state.time * 1.3 + bot.skill * 7) * 0.6;
-        const px = t.position.x - bot.position.x;
-        const pz = t.position.z - bot.position.z;
-        const len = Math.hypot(px, pz) || 1;
-        const sx = (-pz / len) * strafe;
-        const sz = (px / len) * strafe;
-        bot.velocity.x += (sx - bot.velocity.x) * Math.min(1, dt * 6);
-        bot.velocity.z += (sz - bot.velocity.z) * Math.min(1, dt * 6);
-        mover.move(bot, dt, 0);
+        faceToward(bot, t.position.x, t.position.z, dt, 10);
+        const dist = Math.hypot(t.position.x - bot.position.x, t.position.z - bot.position.z);
+        if (bot.retrieving && bomb.status === 'dropped' && bomb.pos) {
+          // The objective outranks the duel: keep moving for the bomb while
+          // shooting, facing the target so the shots still track it.
+          moveToward(bot, bomb.pos.x, bomb.pos.z, dt);
+          faceToward(bot, t.position.x, t.position.z, dt, 10);
+        } else if (isCarrier && bot.pathIndex < bot.path.length) {
+          // The bomb carrier pushes to the site along its route instead of
+          // duelling at mid: follow the next waypoint while facing the target
+          // so the shots still track it. A carrier that stops to duel never
+          // plants, and the round times out with the bomb still carried.
+          const [wx, wz] = bot.path[bot.pathIndex];
+          if (moveToward(bot, wx, wz, dt)) bot.pathIndex += 1;
+          faceToward(bot, t.position.x, t.position.z, dt, 10);
+        } else if (dist > 14) {
+          moveToward(bot, t.position.x, t.position.z, dt);
+        } else {
+          // Strafe a little while firing so the bot is not a statue.
+          const strafe = Math.sin(state.time * 1.3 + bot.skill * 7) * 0.6;
+          const px = t.position.x - bot.position.x;
+          const pz = t.position.z - bot.position.z;
+          const len = Math.hypot(px, pz) || 1;
+          const sx = (-pz / len) * strafe;
+          const sz = (px / len) * strafe;
+          bot.velocity.x += (sx - bot.velocity.x) * Math.min(1, dt * 6);
+          bot.velocity.z += (sz - bot.velocity.z) * Math.min(1, dt * 6);
+          mover.move(bot, dt, 0);
+        }
+        throwGrenadeAt(bot, ctx, dist);
+        if (state.time >= bot.reactionAt) fireAt(bot, ctx, dt);
       }
-      throwGrenadeAt(bot, ctx, dist);
-      if (state.time >= bot.reactionAt) fireAt(bot, ctx, dt);
+    } else if (bot.mode === 'engage') {
+      // Lost the target without a fight to finish: go back to the objective
+      // instead of standing in the open for the rest of the round.
+      if (bot.side === 'ember') {
+        routeTo(bot, { x: SITES[bot.targetSite || 'A'].x, z: SITES[bot.targetSite || 'A'].z });
+      } else if (bot.holdPoint) {
+        routeTo(bot, bot.holdPoint);
+      } else {
+        bot.mode = 'hold';
+      }
     } else if (bot.mode === 'defuse') {
       const d = Math.hypot(bot.position.x - bomb.pos.x, bot.position.z - bomb.pos.z);
       if (bomb.status !== 'planted' || d > 2.4) {
         bot.mode = 'route';
-        bomb.defuseProgress = 0;
-        bomb.defuserId = null;
+        if (bomb.defuserId === bot.id) {
+          bomb.defuseProgress = 0;
+          bomb.defuserId = null;
+        }
+      } else if (bomb.defuserId && bomb.defuserId !== bot.id) {
+        // Another defender is already on the bomb: wait beside it instead of
+        // defusing at double speed.
       } else {
         bomb.defuserId = bot.id;
         bomb.defuseProgress += dt / 5;
@@ -449,6 +570,13 @@ export function createBots(scene, world, mover, combat, state) {
         bot.grenades.he = 1;
         bot.money -= 300;
       }
+      // About a third also carry a smoke for a covered retreat when hurt.
+      bot.grenades.smoke = 0;
+      if (bot.money >= 400 && state.random() < 0.35) {
+        bot.grenades.smoke = 1;
+        bot.money -= 400;
+      }
+      bot.smokeAt = 0;
       bot.grenadeAt = 0;
     }
   }
@@ -473,6 +601,11 @@ export function createBots(scene, world, mover, combat, state) {
       bot.pathIndex = 0;
       bot.investigateAt = null;
       bot.retrieving = false;
+      // Back in the round, the body can be hit again.
+      if (!bot.meshReg) {
+        combat.registerHitMeshes([bot.torso, bot.head]);
+        bot.meshReg = true;
+      }
       bot.stuckAt = state.time;
       bot.stuckX = spawn.x;
       bot.stuckZ = spawn.z;
@@ -483,10 +616,18 @@ export function createBots(scene, world, mover, combat, state) {
 
   function onCarrierDied(carrier) {
     const bomb = state.bomb;
+    // A defuser that dies takes its progress with it: the next defuser starts
+    // from zero, and the bar no longer shows a dead bot's progress.
+    if (bomb.defuserId === carrier.id) {
+      bomb.defuseProgress = 0;
+      bomb.defuserId = null;
+    }
     if (bomb.status !== 'carried' || bomb.carrierId !== carrier.id) return;
     bomb.status = 'dropped';
     bomb.pos = { x: carrier.position.x, z: carrier.position.z };
     bomb.carrierId = null;
+    // The planter died mid-plant: the partial progress dies with them.
+    bomb.plantProgress = 0;
     world.bombGroup.visible = true;
     world.bombGroup.position.set(carrier.position.x, 0.15, carrier.position.z);
   }

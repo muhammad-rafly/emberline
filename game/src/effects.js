@@ -95,7 +95,7 @@ export function createEffects(scene) {
         alive.add(s);
         let sprite = smokeSprites.get(s);
         if (!sprite) {
-          sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: soft, color: new THREE.Color('#9aa4ad'), transparent: true, opacity: 0.55, depthWrite: false }));
+          sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: soft, color: new THREE.Color('#7d838a'), transparent: true, opacity: 0.55, depthWrite: false }));
           sprite.position.set(s.x, s.y, s.z);
           scene.add(sprite);
           smokeSprites.set(s, sprite);

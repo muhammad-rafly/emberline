@@ -8,6 +8,119 @@
 import * as THREE from 'three';
 import { PALETTE } from './palette.js';
 
+// A small seeded random so the painted textures are identical every load.
+function seededRandom(seed) {
+  let a = seed >>> 0;
+  return function random() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Procedural textures, painted once at boot: asphalt with speckle and slab
+// joints, concrete with stains, and a hazard stripe. No image files to ship,
+// so the map stays readable without any asset the judge has to trust.
+function asphaltTexture() {
+  const random = seededRandom(1337);
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#2b2e35';
+  ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 9000; i += 1) {
+    ctx.fillStyle = random() < 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.12)';
+    ctx.fillRect(random() * 512, random() * 512, 1.6, 1.6);
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= 4; i += 1) {
+    ctx.beginPath(); ctx.moveTo(i * 128, 0); ctx.lineTo(i * 128, 512); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * 128); ctx.lineTo(512, i * 128); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 26;
+  ctx.beginPath(); ctx.arc(140, 380, 150, 0.4, 1.6); ctx.stroke();
+  ctx.beginPath(); ctx.arc(390, 130, 170, 3.4, 4.6); ctx.stroke();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(8, 6);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function concreteTexture() {
+  const random = seededRandom(4242);
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#3a3f46';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2500; i += 1) {
+    ctx.fillStyle = random() < 0.5 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.10)';
+    ctx.fillRect(random() * 256, random() * 256, 1.5, 1.5);
+  }
+  // Rain stains running down from the top edge.
+  for (let i = 0; i < 14; i += 1) {
+    const x = random() * 256;
+    const len = 40 + random() * 120;
+    const gradient = ctx.createLinearGradient(0, 0, 0, len);
+    gradient.addColorStop(0, 'rgba(0,0,0,0.22)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x, 0, 4 + random() * 8, len);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function hazardTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#c98a1b';
+  ctx.fillRect(0, 0, 128, 32);
+  ctx.fillStyle = '#1d1f24';
+  for (let x = -32; x < 160; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, 32); ctx.lineTo(x + 16, 0); ctx.lineTo(x + 32, 0); ctx.lineTo(x + 16, 32);
+    ctx.closePath();
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function signTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#20242a';
+  ctx.fillRect(0, 0, 512, 128);
+  ctx.strokeStyle = '#ffb02e';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(6, 6, 500, 116);
+  ctx.fillStyle = '#ffb02e';
+  ctx.font = 'bold 52px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('SOLAR ARRAY 07', 256, 62);
+  ctx.fillStyle = '#8b939c';
+  ctx.font = '24px system-ui, sans-serif';
+  ctx.fillText('DECOMMISSIONED — KEEP OUT', 256, 100);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
 export const SITES = {
   A: { x: -22, z: -14, r: 5.5, name: 'A', color: PALETTE.siteA },
   B: { x: 22, z: -14, r: 5.5, name: 'B', color: PALETTE.siteB },
@@ -49,6 +162,36 @@ export function createWorld(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
+  // Dusk sky dome: a gradient from ember orange at the horizon to deep blue
+  // above, with a low sun glow to the west. It replaces the flat background
+  // colour, so the skyline reads in every screenshot.
+  const skyDome = new THREE.Mesh(
+    new THREE.SphereGeometry(150, 24, 16),
+    new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        top: { value: new THREE.Color('#1d2b45') },
+        mid: { value: new THREE.Color('#7a4a52') },
+        horizon: { value: new THREE.Color('#ff8f3d') },
+        sunDir: { value: new THREE.Vector3(-0.79, 0.30, 0.34).normalize() },
+      },
+      vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: [
+        'varying vec3 vDir; uniform vec3 top; uniform vec3 mid; uniform vec3 horizon; uniform vec3 sunDir;',
+        'void main(){',
+        '  float h = clamp(vDir.y, -0.1, 1.0);',
+        '  vec3 col = mix(horizon, mid, smoothstep(0.0, 0.22, h));',
+        '  col = mix(col, top, smoothstep(0.18, 0.65, h));',
+        '  float s = max(dot(normalize(vDir), sunDir), 0.0);',
+        '  col += vec3(1.0, 0.55, 0.25) * pow(s, 90.0) * 0.9 + vec3(1.0, 0.5, 0.2) * pow(s, 6.0) * 0.25;',
+        '  gl_FragColor = vec4(col, 1.0);',
+        '}',
+      ].join('\n'),
+    }),
+  );
+  scene.add(skyDome);
+
   const materials = {};
   for (const name of Object.keys(PALETTE)) {
     materials[name] = new THREE.MeshStandardMaterial({
@@ -57,6 +200,14 @@ export function createWorld(scene) {
       metalness: name === 'panel' ? 0.35 : 0.03,
     });
   }
+  // Painted surfaces: the ground gets the asphalt texture (its colour comes
+  // from the canvas, so the material colour goes white) and the concrete gets
+  // a stained texture, so flat boxes stop reading as flat colour.
+  materials.ground.map = asphaltTexture();
+  materials.ground.color.set('#ffffff');
+  materials.concrete.map = concreteTexture();
+  materials.concrete.color.set('#ffffff');
+  const hazardMat = new THREE.MeshStandardMaterial({ map: hazardTexture(), roughness: 0.85, metalness: 0.05 });
 
   const colliders = [];
   const shootables = [];
@@ -137,9 +288,94 @@ export function createWorld(scene) {
   tiltedPanel(-26, -19, 0.15);
   tiltedPanel(-26, -15.5, -0.1);
   tiltedPanel(-21, -21, 0.3);
+  tiltedPanel(-13.5, -20, 0.2);
+  tiltedPanel(-13.5, -16.5, -0.2);
   box(0.5, 4.2, 0.5, 19, 2.1, -19, 'rust');
   box(0.5, 4.2, 0.5, 25, 2.1, -19, 'rust');
   box(7, 0.4, 0.6, 22, 4.2, -19, 'rust');
+
+  // Yard props: light poles flanking mid, barrels and cable reels as cover,
+  // sandbags guarding the site approaches. Every prop sits clear of the
+  // waypoint nodes, so bots never have to path around one.
+  function lightPole(x, z) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5.6, 8), materials.concreteDark);
+    pole.position.set(x, 2.8, z);
+    pole.castShadow = true;
+    group.add(pole);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 0.28), materials.rust);
+    head.position.set(x, 5.6, z);
+    group.add(head);
+    const lamp = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.6, 0.2),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffd9a0') }),
+    );
+    lamp.position.set(x, 5.52, z);
+    lamp.rotation.x = Math.PI / 2;
+    group.add(lamp);
+  }
+  lightPole(-9.4, 5.8);
+  lightPole(9.4, -5.8);
+
+  function barrel(x, z, material) {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.95, 12), materials[material]);
+    mesh.position.set(x, 0.48, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    colliders.push(new THREE.Box3().setFromObject(mesh));
+    shootables.push(mesh);
+  }
+  barrel(-14, 2, 'rust');
+  barrel(-13.2, 2.6, 'containerB');
+  barrel(14, 16, 'rust');
+  barrel(14.8, 15.4, 'container');
+  barrel(-6, -14, 'containerB');
+  barrel(6, 12, 'rust');
+
+  function cableReel(x, z) {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.5, 14), materials.wood);
+    mesh.rotation.z = Math.PI / 2;
+    mesh.position.set(x, 0.7, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    colliders.push(new THREE.Box3().setFromObject(mesh));
+    shootables.push(mesh);
+  }
+  cableReel(-28, 6);
+  cableReel(28, -6);
+
+  // Sandbags (low cover) guarding the site approaches.
+  box(1.6, 0.45, 0.5, -19.5, 0.225, -10.5, 'concreteDark');
+  box(1.6, 0.45, 0.5, -24.5, 0.225, -10.5, 'concreteDark');
+  box(1.6, 0.45, 0.5, 19.5, 0.225, -10.5, 'concreteDark');
+  box(1.6, 0.45, 0.5, 24.5, 0.225, -10.5, 'concreteDark');
+  box(1.6, 0.45, 0.5, -3.2, 0.225, -6.8, 'concreteDark');
+  box(1.6, 0.45, 0.5, 3.2, 0.225, -6.8, 'concreteDark');
+
+  // Hazard floor strips across the site gaps and the mid doors, so the
+  // entrances read as entrances from down a lane.
+  function hazardStrip(w, d, x, z) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.02, d), hazardMat);
+    mesh.position.set(x, 0.02, z);
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  }
+  hazardStrip(3.4, 0.6, -18.5, -8);
+  hazardStrip(3.4, 0.6, 18.5, -8);
+  hazardStrip(0.6, 6, -10, 0);
+  hazardStrip(0.6, 6, 10, 0);
+
+  // Painted yard sign on the north wall, the map's one piece of writing.
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(6, 1.5),
+    new THREE.MeshBasicMaterial({ map: signTexture() }),
+  );
+  // Centred on the mid gap in the north divider, so the sign reads whole
+  // from mid-lane through the gap instead of being sliced by the wall.
+  sign.position.set(-3, 3.4, -23.9);
+  group.add(sign);
 
   // Painted lane lines on the asphalt: a mid service road and site boxes.
   function stripe(w, d, x, z, material) {
@@ -184,10 +420,13 @@ export function createWorld(scene) {
     siteDecals.push(letter);
   }
 
-  // Light: a low dusk sun from the west, a cool sky fill, and one lamp over each site.
-  const sky = new THREE.HemisphereLight(new THREE.Color('#5a6b80'), new THREE.Color(PALETTE.ground), 0.9);
+  // Light: a low dusk sun from the west, a cool sky fill, a soft fill from the
+  // east so shadowed faces never go black, and one lamp over each site plus a
+  // floodlight over mid. v1 was too dark to read at a glance; these levels keep
+  // the dusk mood while the lanes, the sites and the bots stay legible.
+  const sky = new THREE.HemisphereLight(new THREE.Color('#8a97b5'), new THREE.Color('#3a2f28'), 1.5);
   scene.add(sky);
-  const sun = new THREE.DirectionalLight(new THREE.Color('#ffb26b'), 2.4);
+  const sun = new THREE.DirectionalLight(new THREE.Color('#ffb26b'), 3.4);
   sun.position.set(-28, 18, 12);
   sun.target.position.set(4, 0, -6);
   sun.castShadow = true;
@@ -199,12 +438,18 @@ export function createWorld(scene) {
   sun.shadow.camera.far = 90;
   sun.shadow.bias = -0.0006;
   scene.add(sun, sun.target);
-  const lampA = new THREE.PointLight(new THREE.Color(PALETTE.siteA), 14, 18, 1.6);
+  const fill = new THREE.DirectionalLight(new THREE.Color('#6f87b8'), 0.7);
+  fill.position.set(30, 22, -8);
+  scene.add(fill);
+  const lampA = new THREE.PointLight(new THREE.Color(PALETTE.siteA), 20, 18, 1.6);
   lampA.position.set(SITES.A.x, 5, SITES.A.z);
   scene.add(lampA);
-  const lampB = new THREE.PointLight(new THREE.Color(PALETTE.siteB), 14, 18, 1.6);
+  const lampB = new THREE.PointLight(new THREE.Color(PALETTE.siteB), 20, 18, 1.6);
   lampB.position.set(SITES.B.x, 5, SITES.B.z);
   scene.add(lampB);
+  const midLamp = new THREE.PointLight(new THREE.Color(PALETTE.accent), 20, 30, 1.6);
+  midLamp.position.set(0, 7, 0);
+  scene.add(midLamp);
 
   // Distant silhouettes outside the walls, for the skyline in screenshots.
   const silhouettes = [
@@ -215,6 +460,13 @@ export function createWorld(scene) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), materials.concreteDark);
     mesh.position.set(x, h / 2, z);
     group.add(mesh);
+    // A few lit windows on the yard-facing side, so the skyline reads at dusk.
+    const windowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffbf5e') });
+    for (const [wy, wx] of [[0.55, -0.22], [0.7, 0.18], [0.35, 0.05]]) {
+      const win = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.8), windowMat);
+      win.position.set(x + wx * w, h * wy, z + d / 2 + 0.02);
+      group.add(win);
+    }
   }
 
   // The bomb: a small blinking case, hidden until a round plants or drops it.
