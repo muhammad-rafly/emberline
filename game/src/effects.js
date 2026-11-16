@@ -53,6 +53,8 @@ export function createEffects(scene) {
 
   const tmpA = new THREE.Vector3();
   const tmpB = new THREE.Vector3();
+  // Reused across frames: syncSmoke runs every frame and must not allocate.
+  const aliveSmoke = new Set();
 
   return {
     tracer(from, to) {
@@ -87,7 +89,8 @@ export function createEffects(scene) {
     // Sync smoke billboards with the live smoke list from combat. Creates a sprite
     // per cloud once, fades it with its ttl, frees it when the cloud dies.
     syncSmoke(smokes, time) {
-      const alive = new Set();
+      const alive = aliveSmoke;
+      alive.clear();
       for (const s of smokes) {
         alive.add(s);
         let sprite = smokeSprites.get(s);

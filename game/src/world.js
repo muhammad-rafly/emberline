@@ -18,7 +18,7 @@ export const SPAWNS = {
     { x: 0, z: 20.5, yaw: 0 },
     { x: -3, z: 21, yaw: 0 },
     { x: 3, z: 21, yaw: 0 },
-    { x: -6, z: 19, yaw: 0 },
+    { x: -5.5, z: 19, yaw: 0 },
   ],
   ash: [
     { x: -3, z: -21.5, yaw: Math.PI },

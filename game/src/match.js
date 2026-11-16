@@ -57,6 +57,9 @@ export function createMatch(state, hooks) {
 
   function checkElimination() {
     if (state.phase !== 'live') return;
+    // A planted bomb outlives its planters: while the fuse runs, the round is
+    // decided by defuse or detonation, not by the last attacker dying.
+    if (state.bomb.status === 'planted') return;
     if (aliveActors(state, 'ember') === 0) endRound('ash', 'Ember eliminated');
     else if (aliveActors(state, 'ash') === 0) endRound('ember', 'Ash eliminated');
   }

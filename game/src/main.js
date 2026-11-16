@@ -167,7 +167,7 @@ function throwGrenade() {
   const id = weapons.takeGrenade();
   if (!id) return;
   camera.getWorldDirection(tmpDir);
-  combat.throwGrenade(id, camera.position, tmpDir);
+  combat.throwGrenade(id, camera.position, tmpDir, playerActor);
   updateAmmoHud();
 }
 
@@ -177,6 +177,7 @@ function onGrenadeBounce() {
 
 function onGrenadeExplode(g) {
   const dist = camera.position.distanceTo(g.position);
+  const owner = g.owner ?? playerActor;
   if (g.id === 'he') {
     effects.explosion(g.position);
     audio.explosion(dist);
@@ -188,7 +189,7 @@ function onGrenadeExplode(g) {
       const chestY = actor.isPlayer ? actor.position.y + actor.eye - 0.25 : 1.25;
       if (world.segmentBlocked(g.position.x, g.position.y + 0.4, g.position.z, actor.position.x, chestY, actor.position.z, combat.smokes)) continue;
       const damage = g.def.damage * (1 - (d / g.def.radius) * 0.7);
-      damageActor(actor, damage, playerActor, 'torso');
+      damageActor(actor, damage, owner, 'torso');
     }
   } else {
     combat.addSmoke(g.position.x, g.position.y, g.position.z, random);
@@ -501,19 +502,26 @@ function frame(now) {
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
   if (!frozen) {
-    const look = input.takeLook();
-    if (playerActor.alive && (state.phase === 'live' || state.phase === 'buy')) player.look(look.x, look.y);
-    handlePressed(input.takePressed());
-    if (state.phase === 'live' && playerActor.alive && input.state.locked) handleFiring();
-    else prevFiring = input.state.firing;
-    accumulator += dt;
-    let steps = 0;
-    while (accumulator >= FIXED_STEP && steps < 5) {
-      step(FIXED_STEP);
-      accumulator -= FIXED_STEP;
-      steps += 1;
+    // Losing pointer lock mid-round is a real pause: the clock, the bots and the
+    // bomb all stop, so the player is never shot while staring at the pause menu.
+    // The buy phase keeps running (its menu needs no lock) and so does the
+    // round-end intermission.
+    const paused = !shot && started && !input.state.locked && state.phase === 'live';
+    if (!paused) {
+      const look = input.takeLook();
+      if (playerActor.alive && (state.phase === 'live' || state.phase === 'buy')) player.look(look.x, look.y);
+      handlePressed(input.takePressed());
+      if (state.phase === 'live' && playerActor.alive && input.state.locked) handleFiring();
+      else prevFiring = input.state.firing;
+      accumulator += dt;
+      let steps = 0;
+      while (accumulator >= FIXED_STEP && steps < 5) {
+        step(FIXED_STEP);
+        accumulator -= FIXED_STEP;
+        steps += 1;
+      }
+      if (accumulator > FIXED_STEP * 5) accumulator = 0;
     }
-    if (accumulator > FIXED_STEP * 5) accumulator = 0;
     syncCamera();
     updateHud();
   }

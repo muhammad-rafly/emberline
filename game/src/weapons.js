@@ -23,7 +23,7 @@ export const WEAPONS = {
   },
   sniper: {
     id: 'sniper', slot: 1, name: 'Longbow-50', kind: 'sniper', price: 4750,
-    damage: 110, headMult: 4, auto: false, gap: 1.15, mag: 5, reserve: 15,
+    damage: 125, headMult: 4, auto: false, gap: 1.15, mag: 5, reserve: 15,
     reload: 3.0, spreadStill: 0.0004, spreadMove: 0.05, recoil: 0.03, range: 120,
   },
 };

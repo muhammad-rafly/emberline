@@ -35,10 +35,35 @@ export function createCombat(scene, world) {
     }
   }
 
+  // Does the segment from->to pass through any live smoke cloud? A shooter
+  // standing inside a cloud is not blocked by it, only by clouds in between.
+  function smokeBlocks(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const dz = to.z - from.z;
+    const lenSq = dx * dx + dy * dy + dz * dz;
+    if (lenSq < 1e-9) return false;
+    for (let i = 0; i < smokes.length; i += 1) {
+      const s = smokes[i];
+      const fx = from.x - s.x;
+      const fy = from.y - s.y;
+      const fz = from.z - s.z;
+      if (fx * fx + fy * fy + fz * fz < s.r * s.r) continue;
+      let t = ((s.x - from.x) * dx + (s.y - from.y) * dy + (s.z - from.z) * dz) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const px = from.x + dx * t - s.x;
+      const py = from.y + dy * t - s.y;
+      const pz = from.z + dz * t - s.z;
+      if (px * px + py * py + pz * pz < s.r * s.r) return true;
+    }
+    return false;
+  }
+
   // Fire one hitscan shot. Returns null, or { kind: 'actor'|'world', actor, part,
   // point, distance }. actor is the target object the meshes were registered with.
   // The shooter's own meshes are skipped, so a ray that starts inside its own
-  // head can never hit itself.
+  // head can never hit itself. A smoke cloud between shooter and hit swallows
+  // the bullet, so smoke blocks sight and shots alike.
   function shoot(from, dir, range, ignoreActor) {
     origin.copy(from);
     direction.copy(dir);
@@ -54,6 +79,7 @@ export function createCombat(scene, world) {
       break;
     }
     if (!hit) return null;
+    if (smokeBlocks(origin, hit.point)) return null;
     const target = hit.object.userData.target;
     if (target && target.alive) {
       return { kind: 'actor', actor: target, part: hit.object.userData.part || 'torso', point: hit.point, distance: hit.distance };
@@ -68,7 +94,7 @@ export function createCombat(scene, world) {
     return damage;
   }
 
-  function throwGrenade(id, from, dir) {
+  function throwGrenade(id, from, dir, owner) {
     const def = GRENADES[id];
     if (!def) return;
     const mesh = grenadeMesh.clone();
@@ -77,7 +103,7 @@ export function createCombat(scene, world) {
     grenadeOrigin.copy(from);
     grenadeDir.copy(dir);
     grenades.push({
-      id, def, mesh,
+      id, def, mesh, owner: owner ?? null,
       velocity: new THREE.Vector3(dir.x * 16, dir.y * 16 + 3.2, dir.z * 16),
       fuse: def.fuse,
       position: mesh.position,

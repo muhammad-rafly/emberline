@@ -14,7 +14,7 @@ const BOT_SPEED = 4.3;
 const EYE_HEIGHT = 1.5;
 const BOT_HEIGHT = 1.72;
 const PERCEIVE_EVERY = 0.15;
-const VIEW_RANGE = 55;
+const VIEW_RANGE = 40;
 
 const ALLY_NAMES = ['Vex', 'Mira', 'Doss'];
 const ENEMY_NAMES = ['Rook', 'Hale', 'Sable', 'Fang'];
@@ -75,6 +75,9 @@ export function createBots(scene, world, mover, combat, state) {
       reactionAt: 0,
       burstLeft: 0,
       burstPause: 0,
+      grenades: { he: 0 },
+      grenadeAt: 0,
+      retrieving: false,
       perceiveAt: skill * 0.05,
       stuckAt: 0,
       stuckX: spawn.x,
@@ -158,22 +161,31 @@ export function createBots(scene, world, mover, combat, state) {
     bot.perceiveAt -= dt;
     if (bot.perceiveAt > 0) return;
     bot.perceiveAt = PERCEIVE_EVERY;
+    // Spread fire: prefer the closest visible enemy that fewer than two
+    // teammates are already shooting at, so four rifles do not melt one target
+    // in a single burst. Fall back to the closest enemy if all are covered.
     let best = null;
     let bestDist = Infinity;
+    let fallback = null;
+    let fallbackDist = Infinity;
     for (const other of state.actors) {
       if (!other.alive || other.side === bot.side) continue;
       const dx = other.position.x - bot.position.x;
       const dz = other.position.z - bot.position.z;
       const dist = Math.hypot(dx, dz);
-      if (dist < bestDist && canSee(bot, other, ctx.smokes)) {
-        best = other;
-        bestDist = dist;
+      if (!canSee(bot, other, ctx.smokes)) continue;
+      let attackers = 0;
+      for (const mate of state.actors) {
+        if (mate !== bot && mate.alive && mate.side === bot.side && mate.target === other) attackers += 1;
       }
+      if (attackers < 2 && dist < bestDist) { best = other; bestDist = dist; }
+      if (dist < fallbackDist) { fallback = other; fallbackDist = dist; }
     }
+    best = best ?? fallback;
     if (best) {
       if (bot.target !== best) {
         bot.target = best;
-        bot.reactionAt = state.time + (0.35 + state.random() * 0.35) * bot.skill;
+        bot.reactionAt = state.time + (0.5 + state.random() * 0.45) * bot.skill;
         bot.burstLeft = 0;
         bot.burstPause = 0;
       }
@@ -191,7 +203,10 @@ export function createBots(scene, world, mover, combat, state) {
       if (state.time - noise.time > 2) continue;
       const dx = noise.x - bot.position.x;
       const dz = noise.z - bot.position.z;
-      if (dx * dx + dz * dz > noise.radius * noise.radius) continue;
+      // Defenders hold their ground: they only chase sounds close to their post,
+      // so a distant firefight does not pull the whole defence off the sites.
+      const hearRadius = bot.side === 'ash' ? Math.min(noise.radius, 14) : noise.radius;
+      if (dx * dx + dz * dz > hearRadius * hearRadius) continue;
       if (bot.investigateAt && Math.hypot(bot.investigateAt.x - noise.x, bot.investigateAt.z - noise.z) < 3) return;
       bot.investigateAt = { x: noise.x, z: noise.z, until: state.time + 6 };
       routeTo(bot, bot.investigateAt);
@@ -239,18 +254,18 @@ export function createBots(scene, world, mover, combat, state) {
     }
     if (bot.burstPause > 0) {
       bot.burstPause -= dt;
-      if (bot.burstPause <= 0) bot.burstLeft = 3 + Math.floor(state.random() * 3);
+      if (bot.burstPause <= 0) bot.burstLeft = 2 + Math.floor(state.random() * 3);
     } else if (bot.burstLeft <= 0) {
       // Idle with an empty burst and no pause means the first burst: start one
       // instead of waiting for a pause that will never come.
-      bot.burstLeft = 3 + Math.floor(state.random() * 3);
+      bot.burstLeft = 2 + Math.floor(state.random() * 3);
     }
     if (bot.burstLeft <= 0 || weapon.cooldown > 0) return;
     const target = bot.target;
     if (!target || !target.alive) return;
     const dist = Math.hypot(target.position.x - bot.position.x, target.position.z - bot.position.z);
     const moving = Math.hypot(target.velocity.x, target.velocity.z) > 1.5;
-    const error = (0.55 + dist * 0.028) * (moving ? 1.6 : 1) * bot.skill;
+    const error = (0.7 + dist * 0.034) * (moving ? 1.6 : 1) * bot.skill;
     const aimHead = state.random() < 0.12;
     const chestY = target.isPlayer ? target.position.y + target.eye - 0.25 : 1.25;
     const aimY = aimHead ? chestY + 0.35 : chestY;
@@ -268,7 +283,7 @@ export function createBots(scene, world, mover, combat, state) {
     weapon.mag -= 1;
     weapon.cooldown = weapon.def.gap;
     bot.burstLeft -= 1;
-    if (bot.burstLeft <= 0) bot.burstPause = (0.5 + state.random() * 0.5) * bot.skill;
+    if (bot.burstLeft <= 0) bot.burstPause = (0.8 + state.random() * 0.6) * bot.skill;
     const end = hit ? hit.point : new THREE.Vector3(eye.x + dir.x * 40, eye.y + dir.y * 40, eye.z + dir.z * 40);
     ctx.shotVisual(from, end, weapon.def.kind, dist);
     addNoise(state, bot.position.x, bot.position.z, 34, 'shot');
@@ -276,6 +291,25 @@ export function createBots(scene, world, mover, combat, state) {
       const damage = ctx.combat.damageFor(weapon.def, hit.part, hit.distance);
       ctx.damageActor(hit.actor, damage, bot, hit.part);
     }
+  }
+
+  // A bot with a grenade lobs it at the last place it saw its target, so a dug-in
+  // enemy gets flushed out instead of holding the same angle forever.
+  function throwGrenadeAt(bot, ctx, dist) {
+    if (bot.grenades.he <= 0 || state.time < bot.grenadeAt) return;
+    if (dist < 8 || dist > 28) return;
+    if (state.time - bot.lastSeenTime > 1.5) return;
+    const eye = eyeOf(bot);
+    const dx = bot.lastSeen.x - eye.x;
+    const dy = 1.0 - eye.y + 0.35;
+    const dz = bot.lastSeen.z - eye.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    const from = new THREE.Vector3(eye.x, eye.y, eye.z);
+    const dir = new THREE.Vector3(dx / len, dy / len, dz / len);
+    ctx.combat.throwGrenade('he', from, dir, bot);
+    bot.grenades.he -= 1;
+    bot.grenadeAt = state.time + 25;
+    addNoise(state, bot.position.x, bot.position.z, 20, 'throw');
   }
 
   function stepBot(bot, ctx, dt) {
@@ -310,7 +344,12 @@ export function createBots(scene, world, mover, combat, state) {
       const t = bot.target;
       faceToward(bot, t.position.x, t.position.z, dt, 10);
       const dist = Math.hypot(t.position.x - bot.position.x, t.position.z - bot.position.z);
-      if (dist > 14) {
+      if (bot.retrieving && bomb.status === 'dropped' && bomb.pos) {
+        // The objective outranks the duel: keep moving for the bomb while
+        // shooting, facing the target so the shots still track it.
+        moveToward(bot, bomb.pos.x, bomb.pos.z, dt);
+        faceToward(bot, t.position.x, t.position.z, dt, 10);
+      } else if (dist > 14) {
         moveToward(bot, t.position.x, t.position.z, dt);
       } else {
         // Strafe a little while firing so the bot is not a statue.
@@ -324,6 +363,7 @@ export function createBots(scene, world, mover, combat, state) {
         bot.velocity.z += (sz - bot.velocity.z) * Math.min(1, dt * 6);
         mover.move(bot, dt, 0);
       }
+      throwGrenadeAt(bot, ctx, dist);
       if (state.time >= bot.reactionAt) fireAt(bot, ctx, dt);
     } else if (bot.mode === 'defuse') {
       const d = Math.hypot(bot.position.x - bomb.pos.x, bot.position.z - bomb.pos.z);
@@ -403,6 +443,13 @@ export function createBots(scene, world, mover, combat, state) {
       if (!bot.alive) continue;
       const def = bot.money >= WEAPONS.rifle.price ? WEAPONS.rifle : bot.money >= WEAPONS.smg.price ? WEAPONS.smg : WEAPONS.pistol;
       bot.weapon = { def, mag: def.mag, reserve: def.reserve, cooldown: 0, reloading: 0 };
+      // About half the bots carry one HE grenade when they can afford it after the gun.
+      bot.grenades.he = 0;
+      if (bot.money >= def.price + 300 && state.random() < 0.5) {
+        bot.grenades.he = 1;
+        bot.money -= 300;
+      }
+      bot.grenadeAt = 0;
     }
   }
 
@@ -425,6 +472,7 @@ export function createBots(scene, world, mover, combat, state) {
       bot.path = [];
       bot.pathIndex = 0;
       bot.investigateAt = null;
+      bot.retrieving = false;
       bot.stuckAt = state.time;
       bot.stuckX = spawn.x;
       bot.stuckZ = spawn.z;
@@ -453,10 +501,38 @@ export function createBots(scene, world, mover, combat, state) {
         bomb.status = 'carried';
         bomb.carrierId = bot.id;
         bomb.pos = null;
+        bot.retrieving = false;
         world.bombGroup.visible = false;
         routeTo(bot, { x: SITES[bot.targetSite || 'A'].x, z: SITES[bot.targetSite || 'A'].z });
         return;
       }
+    }
+  }
+
+  // A dropped bomb strands the objective: send the nearest free Ember bot back
+  // for it, so a round can still be won by planting after the carrier dies.
+  function assignRetrieval() {
+    const bomb = state.bomb;
+    if (bomb.status !== 'dropped' || !bomb.pos) {
+      for (const bot of bots) bot.retrieving = false;
+      return;
+    }
+    let best = null;
+    let bestD = Infinity;
+    for (const bot of bots) {
+      if (!bot.alive || bot.side !== 'ember') continue;
+      const d = Math.hypot(bot.position.x - bomb.pos.x, bot.position.z - bomb.pos.z);
+      // Prefer a bot not already in a fight, but take a fighting one over nobody:
+      // a retriever keeps moving for the bomb while shooting.
+      const score = d + (bot.target ? 25 : 0);
+      if (score < bestD) { bestD = score; best = bot; }
+    }
+    for (const bot of bots) {
+      if (bot !== best) bot.retrieving = false;
+    }
+    if (best && !best.retrieving) {
+      best.retrieving = true;
+      routeTo(best, bomb.pos);
     }
   }
 
@@ -466,6 +542,7 @@ export function createBots(scene, world, mover, combat, state) {
     bots,
     step(dt, ctx) {
       pickupCheck();
+      assignRetrieval();
       for (const bot of bots) stepBot(bot, ctx, dt);
     },
     resetRound,
