@@ -51,6 +51,14 @@
   #damage { position: fixed; inset: 0; pointer-events: none; opacity: 0; transition: opacity 120ms linear; background: radial-gradient(ellipse at center, transparent 55%, rgba(229, 72, 77, 0.45) 100%); }
   #damage.on { opacity: 1; }
 
+  /* Damage direction: one screen edge lights up on the side the shot came from. */
+  .dmg-edge { position: fixed; pointer-events: none; opacity: 0; transition: opacity 150ms linear; }
+  .dmg-edge.on { opacity: 1; }
+  #dmg-front { top: 0; left: 0; right: 0; height: 90px; background: linear-gradient(to bottom, rgba(229, 72, 77, 0.55), transparent); }
+  #dmg-back { bottom: 0; left: 0; right: 0; height: 90px; background: linear-gradient(to top, rgba(229, 72, 77, 0.55), transparent); }
+  #dmg-left { left: 0; top: 0; bottom: 0; width: 90px; background: linear-gradient(to right, rgba(229, 72, 77, 0.55), transparent); }
+  #dmg-right { right: 0; top: 0; bottom: 0; width: 90px; background: linear-gradient(to left, rgba(229, 72, 77, 0.55), transparent); }
+
   #health { position: fixed; left: 32px; bottom: 24px; font-family: var(--font-readout); }
   #health-num { font-size: 40px; line-height: 1; }
   #health-label { font-size: 11px; letter-spacing: 0.12em; color: var(--muted); }
@@ -91,6 +99,7 @@
   .feed-ash { color: var(--enemy); }
 
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(26, 32, 40, 0.86); }
+  .overlay.light-dim { background: rgba(26, 32, 40, 0.55); }
   .overlay[hidden] { display: none; }
   .panel { width: min(460px, 100%); padding: 32px; background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--radius-panel); }
   .panel h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.15; font-weight: 500; letter-spacing: -0.02em; }
@@ -126,6 +135,10 @@
 
 <div id="hud" aria-hidden="true">
   <div id="damage"></div>
+  <div id="dmg-front" class="dmg-edge"></div>
+  <div id="dmg-back" class="dmg-edge"></div>
+  <div id="dmg-left" class="dmg-edge"></div>
+  <div id="dmg-right" class="dmg-edge"></div>
   <div id="crosshair"><i></i><i></i><i></i><i></i></div>
   <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
   <div id="plant-bar" hidden><div id="plant-label">PLANTING</div><div id="plant-track"><div id="plant-fill"></div></div></div>
